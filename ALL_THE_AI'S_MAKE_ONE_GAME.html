@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AI Makes a Game – Enhanced</title>
+  <title>AI Makes a Game – Shop Edition</title>
   <style>
     html, body {
       margin: 0;
@@ -133,6 +133,10 @@
       max-width: 260px;
       text-align: right;
     }
+    #coins-label {
+      font-size: 13px;
+      font-weight: 600;
+    }
     #game-over-overlay {
       position: absolute;
       inset: 0;
@@ -166,11 +170,115 @@
     #game-over-overlay button:hover {
       filter: brightness(1.1);
     }
+
+    /* Shop overlay */
+    #shop-overlay {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at center, rgba(0,0,0,0.85), rgba(0,0,0,0.98));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease-out;
+    }
+    #shop-overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #shop-panel {
+      width: min(640px, 90vw);
+      max-height: 80vh;
+      background: rgba(10,12,20,0.96);
+      border-radius: 16px;
+      box-shadow: 0 0 24px rgba(0,0,0,0.9);
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: hidden;
+    }
+    #shop-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    #shop-coins {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    #shop-list {
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 4px;
+      margin: 6px 0;
+    }
+    .shop-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 6px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.03);
+      margin-bottom: 6px;
+      gap: 8px;
+    }
+    .shop-item-main {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .shop-item-name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .shop-item-desc {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+    .shop-item-meta {
+      font-size: 11px;
+      opacity: 0.7;
+    }
+    .shop-buy {
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(90deg, #4b9bff, #7cf5ff);
+      color: #111;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .shop-buy:disabled {
+      cursor: default;
+      background: rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.5);
+    }
+    #shop-continue {
+      margin-top: 4px;
+      align-self: flex-end;
+      padding: 8px 18px;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(90deg, #ff4b4b, #ffb347);
+      color: #111;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(0,0,0,0.8);
+    }
+    #shop-continue:hover {
+      filter: brightness(1.1);
+    }
   </style>
 </head>
 <body>
   <div id="game-container">
     <canvas id="game"></canvas>
+
     <div id="hud">
       <div id="hud-left">
         <div class="label">HP</div>
@@ -206,17 +314,29 @@
         </div>
       </div>
       <div id="hud-right">
+        <div id="coins-label">Coins: 0</div>
         <div id="help">
           WASD to move • Mouse or Space to shoot<br/>
-          Q/E/R/F: abilities (unlock over time)<br/>
+          Q/E/R/F: abilities (unlock via shop)<br/>
           Boss every 5 waves • Place sentries & walls strategically
         </div>
       </div>
     </div>
+
     <div id="wave-announce"></div>
+
     <div id="game-over-overlay">
       <div id="game-over-text">Game Over</div>
       <button id="restart-btn">Restart</button>
+    </div>
+
+    <div id="shop-overlay">
+      <div id="shop-panel">
+        <div id="shop-title">Upgrade Shop</div>
+        <div id="shop-coins">Coins: 0</div>
+        <div id="shop-list"></div>
+        <button id="shop-continue">Start Next Wave</button>
+      </div>
     </div>
   </div>
 
@@ -252,6 +372,7 @@
       hitFlash: 0,
       facing: 0,
       kills: 0,
+      coins: 0,
       freezeCd: 0,
       explodeCd: 0,
       sentryCd: 0,
@@ -259,6 +380,14 @@
     };
 
     let gameOver = false;
+    let shopOpen = false;
+
+    // damage / ability scaling
+    let bulletDamage = 25;
+    let freezeDuration = 120;   // frames
+    let explodeDamage = 120;
+    let sentryCdFactor = 1;     // lower = faster
+    let wallHpBase = 160;
 
     // ------------------------------------------------------------
     // Input
@@ -340,14 +469,6 @@
       }
     }
 
-    // Unlock progression: simple, wave-based
-    function handleAbilityUnlocksByWave(wave) {
-      if (wave >= 2) abilityUnlocks.freeze = true;
-      if (wave >= 3) abilityUnlocks.explode = true;
-      if (wave >= 4) abilityUnlocks.sentry = true;
-      if (wave >= 5) abilityUnlocks.walls = true;
-    }
-
     // ------------------------------------------------------------
     // Entities
     // ------------------------------------------------------------
@@ -360,7 +481,7 @@
     let bulletIdCounter = 1;
 
     const SENTRY_RANGE = 420;
-    const SENTRY_FIRE_COOLDOWN = 40;
+    const SENTRY_FIRE_COOLDOWN_BASE = 40;
 
     // ------------------------------------------------------------
     // Enemy types
@@ -429,13 +550,14 @@
       wave: 1,
       spawnLeft: 0,
       spawnTimer: 0,
-      state: 'idle', // 'idle', 'spawning', 'fighting'
+      state: 'idle', // 'idle', 'spawning', 'fighting', 'shop'
       isBossWave: false
     };
 
     const waveAnnounceEl = document.getElementById('wave-announce');
     const waveLabelEl = document.getElementById('wave-label');
     const hpBarEl = document.getElementById('hp-bar');
+    const coinsLabelEl = document.getElementById('coins-label');
 
     function announceWave(text) {
       waveAnnounceEl.textContent = text;
@@ -448,7 +570,6 @@
     function startWave() {
       const w = waveManager.wave;
       waveManager.isBossWave = (w % 5 === 0);
-      handleAbilityUnlocksByWave(w);
 
       if (waveManager.isBossWave) {
         waveManager.spawnLeft = 0;
@@ -473,16 +594,15 @@
 
       const def = ENEMY_TYPES[type];
 
-      // spawn around edges of world
       const side = Math.floor(Math.random() * 4);
       let x, y;
-      if (side === 0) { // top
+      if (side === 0) {
         x = Math.random() * WORLD_W;
         y = 40;
-      } else if (side === 1) { // bottom
+      } else if (side === 1) {
         x = Math.random() * WORLD_W;
         y = WORLD_H - 40;
-      } else if (side === 2) { // left
+      } else if (side === 2) {
         x = 40;
         y = Math.random() * WORLD_H;
       } else {
@@ -533,7 +653,7 @@
     // Shooting
     // ------------------------------------------------------------
     function fireBulletTowards(targetX, targetY) {
-      if (gameOver) return;
+      if (gameOver || shopOpen) return;
       if (bullets.length > 200) return;
       const dx = targetX - player.x;
       const dy = targetY - player.y;
@@ -552,7 +672,7 @@
     }
 
     function manualShoot() {
-      if (gameOver) return;
+      if (gameOver || shopOpen) return;
       fireBulletTowards(mouseWorld.x, mouseWorld.y);
     }
 
@@ -562,21 +682,21 @@
     function activateFreeze() {
       if (!abilityUnlocks.freeze) return;
       if (player.freezeCd > 0) return;
-      player.freezeCd = 60 * 8; // 8s cooldown
+      player.freezeCd = 60 * 8;
       enemies.forEach(e => {
-        e.frozen = 120; // 2s slow
+        e.frozen = freezeDuration;
       });
     }
 
     function activateExplode() {
       if (!abilityUnlocks.explode) return;
       if (player.explodeCd > 0) return;
-      player.explodeCd = 60 * 10; // 10s cooldown
+      player.explodeCd = 60 * 10;
       const radius = 220;
       enemies.forEach(e => {
         const d = Math.hypot(e.x - player.x, e.y - player.y);
         if (d <= radius) {
-          e.hp -= 120;
+          e.hp -= explodeDamage;
         }
       });
     }
@@ -584,7 +704,7 @@
     function activateSentry() {
       if (!abilityUnlocks.sentry) return;
       if (player.sentryCd > 0) return;
-      player.sentryCd = 60 * 12; // 12s cooldown
+      player.sentryCd = 60 * 12;
       sentries.push({
         x: player.x,
         y: player.y,
@@ -595,7 +715,7 @@
     function activateWall() {
       if (!abilityUnlocks.walls) return;
       if (player.wallCd > 0) return;
-      player.wallCd = 60 * 2; // 2s cooldown
+      player.wallCd = 60 * 2;
       tryPlaceWall(player.x, player.y);
     }
 
@@ -603,10 +723,8 @@
     // Walls
     // ------------------------------------------------------------
     function tryPlaceWall(x, y) {
-      // prevent placing directly on player
       if (Math.hypot(x - player.x, y - player.y) < 40) return;
 
-      // anti-enclosure: limit walls near player
       const nearby = walls.filter(w => Math.hypot(w.x - player.x, w.y - player.y) < 220);
       if (nearby.length >= 8) return;
 
@@ -615,7 +733,7 @@
         y,
         w: 48,
         h: 14,
-        hp: 160
+        hp: wallHpBase
       });
     }
 
@@ -646,10 +764,249 @@
     }
 
     // ------------------------------------------------------------
+    // Shop
+    // ------------------------------------------------------------
+    const shopOverlay = document.getElementById('shop-overlay');
+    const shopTitleEl = document.getElementById('shop-title');
+    const shopCoinsEl = document.getElementById('shop-coins');
+    const shopListEl = document.getElementById('shop-list');
+    const shopContinueBtn = document.getElementById('shop-continue');
+
+    const upgrades = [
+      {
+        id: 'dmg',
+        name: 'Bullet Damage',
+        desc: '+5 damage per level.',
+        level: 0,
+        baseCost: 5,
+        costMult: 1.6,
+        apply() {
+          this.level++;
+          bulletDamage += 5;
+        }
+      },
+      {
+        id: 'speed',
+        name: 'Move Speed',
+        desc: '+0.3 movement speed per level.',
+        level: 0,
+        baseCost: 5,
+        costMult: 1.6,
+        apply() {
+          this.level++;
+          player.speed += 0.3;
+        }
+      },
+      {
+        id: 'hp',
+        name: 'Max HP',
+        desc: '+20 max HP per level.',
+        level: 0,
+        baseCost: 6,
+        costMult: 1.7,
+        apply() {
+          this.level++;
+          player.maxHp += 20;
+          player.hp += 20;
+        }
+      },
+      {
+        id: 'unlock_freeze',
+        name: 'Unlock Freeze (Q)',
+        desc: 'Freeze enemies briefly around the map.',
+        level: 0,
+        maxLevel: 1,
+        baseCost: 8,
+        costMult: 999,
+        apply() {
+          abilityUnlocks.freeze = true;
+          this.level = 1;
+        }
+      },
+      {
+        id: 'freeze_power',
+        name: 'Freeze Power',
+        desc: '+0.5s freeze duration per level.',
+        level: 0,
+        baseCost: 7,
+        costMult: 1.7,
+        apply() {
+          this.level++;
+          freezeDuration += 30;
+        }
+      },
+      {
+        id: 'unlock_explode',
+        name: 'Unlock Explode (E)',
+        desc: 'Explosive blast around you.',
+        level: 0,
+        maxLevel: 1,
+        baseCost: 10,
+        costMult: 999,
+        apply() {
+          abilityUnlocks.explode = true;
+          this.level = 1;
+        }
+      },
+      {
+        id: 'explode_power',
+        name: 'Explode Power',
+        desc: '+40 explosion damage per level.',
+        level: 0,
+        baseCost: 9,
+        costMult: 1.7,
+        apply() {
+          this.level++;
+          explodeDamage += 40;
+        }
+      },
+      {
+        id: 'unlock_sentry',
+        name: 'Unlock Sentry (R)',
+        desc: 'Place an auto-firing sentry turret.',
+        level: 0,
+        maxLevel: 1,
+        baseCost: 12,
+        costMult: 999,
+        apply() {
+          abilityUnlocks.sentry = true;
+          this.level = 1;
+        }
+      },
+      {
+        id: 'sentry_rate',
+        name: 'Sentry Fire Rate',
+        desc: 'Sentries fire faster each level.',
+        level: 0,
+        baseCost: 10,
+        costMult: 1.7,
+        apply() {
+          this.level++;
+          sentryCdFactor = Math.max(0.4, sentryCdFactor - 0.1);
+        }
+      },
+      {
+        id: 'unlock_walls',
+        name: 'Unlock Walls (F)',
+        desc: 'Place walls to shape the battlefield.',
+        level: 0,
+        maxLevel: 1,
+        baseCost: 10,
+        costMult: 999,
+        apply() {
+          abilityUnlocks.walls = true;
+          this.level = 1;
+        }
+      },
+      {
+        id: 'wall_hp',
+        name: 'Wall Durability',
+        desc: '+40 HP per wall per level.',
+        level: 0,
+        baseCost: 9,
+        costMult: 1.7,
+        apply() {
+          this.level++;
+          wallHpBase += 40;
+        }
+      }
+    ];
+
+    function getUpgradeCost(upg) {
+      if (upg.maxLevel && upg.level >= upg.maxLevel) return null;
+      if (upg.currentCost == null) return upg.baseCost;
+      return upg.currentCost;
+    }
+
+    function renderShop() {
+      shopTitleEl.textContent = 'Upgrade Shop – Wave ' + waveManager.wave + ' Complete';
+      shopCoinsEl.textContent = 'Coins: ' + player.coins;
+      shopListEl.innerHTML = '';
+
+      upgrades.forEach(upg => {
+        const cost = getUpgradeCost(upg);
+        const row = document.createElement('div');
+        row.className = 'shop-item';
+
+        const main = document.createElement('div');
+        main.className = 'shop-item-main';
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'shop-item-name';
+        nameEl.textContent = upg.name + ' (Lv ' + upg.level + (upg.maxLevel ? '/' + upg.maxLevel : '') + ')';
+
+        const descEl = document.createElement('div');
+        descEl.className = 'shop-item-desc';
+        descEl.textContent = upg.desc;
+
+        const metaEl = document.createElement('div');
+        metaEl.className = 'shop-item-meta';
+        if (cost == null) {
+          metaEl.textContent = 'Maxed';
+        } else {
+          metaEl.textContent = 'Cost: ' + cost;
+        }
+
+        main.appendChild(nameEl);
+        main.appendChild(descEl);
+        main.appendChild(metaEl);
+
+        const btn = document.createElement('button');
+        btn.className = 'shop-buy';
+
+        if (cost == null) {
+          btn.textContent = 'Maxed';
+          btn.disabled = true;
+        } else {
+          btn.textContent = 'Buy (' + cost + ')';
+          if (player.coins < cost) {
+            btn.disabled = true;
+          }
+        }
+
+        btn.addEventListener('click', () => {
+          const c = getUpgradeCost(upg);
+          if (c == null) return;
+          if (player.coins < c) return;
+          player.coins -= c;
+          upg.apply();
+          upg.currentCost = Math.round(c * upg.costMult);
+          renderShop();
+        });
+
+        row.appendChild(main);
+        row.appendChild(btn);
+        shopListEl.appendChild(row);
+      });
+    }
+
+    function openShop() {
+      shopOpen = true;
+      waveManager.state = 'shop';
+      renderShop();
+      shopOverlay.classList.add('show');
+    }
+
+    shopContinueBtn.addEventListener('click', () => {
+      shopOverlay.classList.remove('show');
+      shopOpen = false;
+      waveManager.wave++;
+      waveManager.state = 'idle';
+    });
+
+    // ------------------------------------------------------------
     // Update loop
     // ------------------------------------------------------------
     function update() {
+      // HUD always updates
+      const hpPct = player.hp / player.maxHp;
+      hpBarEl.style.width = (Math.max(0, Math.min(1, hpPct)) * 100) + '%';
+      waveLabelEl.textContent = 'Wave ' + waveManager.wave + ' • Kills ' + player.kills;
+      coinsLabelEl.textContent = 'Coins: ' + player.coins;
+      updateAbilityUI();
+
       if (gameOver) return;
+      if (shopOpen) return;
 
       // movement
       let mvx = 0, mvy = 0;
@@ -666,11 +1023,9 @@
       let newX = player.x + mvx * player.speed;
       let newY = player.y + mvy * player.speed;
 
-      // clamp to world
       newX = Math.max(player.radius, Math.min(WORLD_W - player.radius, newX));
       newY = Math.max(player.radius, Math.min(WORLD_H - player.radius, newY));
 
-      // wall collision for player
       let blocked = false;
       for (const w of walls) {
         if (circleRectCollide(newX, newY, player.radius, w.x - w.w / 2, w.y - w.h / 2, w.w, w.h)) {
@@ -715,8 +1070,7 @@
         }
       } else if (waveManager.state === 'fighting') {
         if (enemies.length === 0 && waveManager.spawnLeft === 0) {
-          waveManager.wave++;
-          waveManager.state = 'idle';
+          openShop();
         }
       }
 
@@ -735,14 +1089,12 @@
         let exNew = e.x + (dx / dist) * spd;
         let eyNew = e.y + (dy / dist) * spd;
 
-        // clamp to world
         exNew = Math.max(e.radius, Math.min(WORLD_W - e.radius, exNew));
         eyNew = Math.max(e.radius, Math.min(WORLD_H - e.radius, eyNew));
 
-        // wall interaction: if colliding, damage wall and push back
         for (const w of walls) {
           if (circleRectCollide(exNew, eyNew, e.radius, w.x - w.w / 2, w.y - w.h / 2, w.w, w.h)) {
-            w.hp -= 0.6; // enemy chooses to chew through wall
+            w.hp -= 0.6;
             exNew = e.x - (dx / dist) * spd * 0.4;
             eyNew = e.y - (dy / dist) * spd * 0.4;
           }
@@ -751,20 +1103,17 @@
         e.x = exNew;
         e.y = eyNew;
 
-        // contact damage
         const dToPlayer = Math.hypot(e.x - player.x, e.y - player.y);
         if (dToPlayer < e.radius + player.radius) {
           player.hp -= 0.25;
           player.hitFlash = 6;
         }
 
-        // boss attack patterns
         if (e.isBoss) {
           e.patternTimer++;
           if (e.patternTimer % 90 === 0) {
             const patternType = Math.floor(Math.random() * 3);
             if (patternType === 0) {
-              // radial burst
               for (let k = 0; k < 16; k++) {
                 const ang = (k / 16) * Math.PI * 2;
                 enemyBullets.push({
@@ -776,7 +1125,6 @@
                 });
               }
             } else if (patternType === 1) {
-              // aimed triple shot
               const bdx = player.x - e.x;
               const bdy = player.y - e.y;
               const baseAng = Math.atan2(bdy, bdx);
@@ -791,7 +1139,6 @@
                 });
               });
             } else {
-              // spiral
               const base = (Date.now() / 200) % (Math.PI * 2);
               for (let k = 0; k < 10; k++) {
                 const ang = base + (k / 10) * Math.PI * 2;
@@ -807,14 +1154,13 @@
           }
         }
 
-        // dead enemy
         if (e.hp <= 0) {
-          enemies.splice(i, 1);
           player.kills++;
+          player.coins += e.reward;
+          enemies.splice(i, 1);
         }
       }
 
-      // clean up dead walls
       for (let i = walls.length - 1; i >= 0; i--) {
         if (walls[i].hp <= 0) walls.splice(i, 1);
       }
@@ -832,13 +1178,12 @@
           continue;
         }
 
-        // hit enemy
         let hit = false;
         for (let j = enemies.length - 1; j >= 0; j--) {
           const e = enemies[j];
           const d = Math.hypot(b.x - e.x, b.y - e.y);
           if (d < b.r + e.radius) {
-            e.hp -= 25;
+            e.hp -= bulletDamage;
             hit = true;
             break;
           }
@@ -894,11 +1239,10 @@
             r: 4,
             life: 90
           });
-          s.cd = SENTRY_FIRE_COOLDOWN;
+          s.cd = Math.round(SENTRY_FIRE_COOLDOWN_BASE * sentryCdFactor);
         }
       });
 
-      // hp & game over
       if (player.hp < 0) player.hp = 0;
       if (player.hp <= 0) {
         triggerGameOver();
@@ -906,17 +1250,10 @@
 
       if (player.hitFlash > 0) player.hitFlash--;
 
-      // camera
       camera.x = player.x - canvas.width / 2;
       camera.y = player.y - canvas.height / 2;
       camera.x = Math.max(0, Math.min(WORLD_W - canvas.width, camera.x));
       camera.y = Math.max(0, Math.min(WORLD_H - canvas.height, camera.y));
-
-      // HUD
-      const hpPct = player.hp / player.maxHp;
-      hpBarEl.style.width = (Math.max(0, Math.min(1, hpPct)) * 100) + '%';
-      waveLabelEl.textContent = 'Wave ' + waveManager.wave + ' • Kills ' + player.kills;
-      updateAbilityUI();
     }
 
     // ------------------------------------------------------------
@@ -940,7 +1277,6 @@
         ctx.lineTo(WORLD_W, y);
         ctx.stroke();
       }
-      // world border
       ctx.strokeStyle = 'rgba(255,255,255,0.2)';
       ctx.lineWidth = 4;
       ctx.strokeRect(0, 0, WORLD_W, WORLD_H);
@@ -978,7 +1314,6 @@
         ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
         ctx.fill();
 
-        // hp bar
         const pct = e.hp / e.maxHp;
         if (pct < 1) {
           ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -1068,7 +1403,6 @@
       requestAnimationFrame(loop);
     }
 
-    // start
     startWave();
     loop();
   </script>
