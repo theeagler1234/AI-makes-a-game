@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Bullet Hell: Infinite Waves</title>
+<style>
+    body { margin:0; overflow:hidden; background:#0b0f1a; color:white; font-family:sans-serif;}
+    canvas { display:block; }
+    #ui {
+        position:absolute; top:10px; left:10px;
+        background:rgba(0,0,0,0.5);
+        padding:10px; border-radius:8px;
+    }
+    #shop, #cheats {
+        position:absolute; top:50%; left:50%;
+        transform:translate(-50%,-50%);
+        background:#111; padding:20px;
+        display:none; border:2px solid white;
+    }
+    button { margin:5px; }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="ui"></div>
+
+<div id="shop"></div>
+<div id="cheats"></div>
+
+<script>
+// ============================
+// DEV NOTES FOR EXTENSIONS
+// ============================
+// Core systems:
+// - Player object handles stats + abilities
+// - Enemy array contains all enemies
+// - Wave manager controls spawning
+// - Shop modifies player stats
+// - Camera follows player across large world
+//
+// EASY EXPANSION POINTS:
+// - Add new abilities in abilities object
+// - Add enemy types in spawnEnemy()
+// - Add upgrades in shopOptions[]
+// - Add bosses every X waves
+//
+// Rendering:
+// Uses canvas + procedural "sprite-like" drawing (glow, gradients)
+//
+// ============================
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+resize();
+window.onresize = resize;
+
+function resize(){
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+}
+
+// WORLD
+const WORLD_SIZE = 4000;
+
+// CAMERA
+let camera = {x:0,y:0};
+
+// PLAYER
+let player = {
+    x:2000,y:2000,
+    speed:3,
+    radius:15,
+    hp:100,
+    maxHp:100,
+    damage:10,
+    invincible:false,
+    coins:0,
+    freezeLevel:1,
+    explodeLevel:1
+};
+
+// INPUT
+let keys = {};
+document.addEventListener("keydown", e=>{
+    keys[e.key.toLowerCase()] = true;
+    if(e.key === "-") toggleCheats();
+});
+document.addEventListener("keyup", e=>{
+    keys[e.key.toLowerCase()] = false;
+});
+
+// MOBILE JOYSTICK
+let joystick = null;
+if(/Mobi|Android/i.test(navigator.userAgent)){
+    joystick = {x:100,y:innerHeight-100,dx:0,dy:0,active:false};
+
+    canvas.addEventListener("touchstart", e=>{
+        joystick.active = true;
+    });
+    canvas.addEventListener("touchmove", e=>{
+        let t = e.touches[0];
+        joystick.dx = t.clientX - joystick.x;
+        joystick.dy = t.clientY - joystick.y;
+    });
+    canvas.addEventListener("touchend", ()=>{
+        joystick.active = false;
+        joystick.dx = joystick.dy = 0;
+    });
+}
+
+// ENEMIES
+let enemies = [];
+
+// BULLETS
+let bullets = [];
+
+// WAVE
+let wave = 1;
+let enemiesToSpawn = 5;
+let spawning = true;
+
+// ABILITIES
+function freeze(){
+    enemies.forEach(e=> e.frozen = 300);
+}
+
+function explode(){
+    let dmg = 350 + (100*(player.explodeLevel-1));
+    enemies.forEach(e=>{
+        let dist = Math.hypot(e.x-player.x,e.y-player.y);
+        if(dist < 300) e.hp -= dmg;
+    });
+}
+
+// CHEATS
+let cheats = {
+    invincible:false,
+    superSpeed:false,
+    infiniteDamage:false
+};
+
+function toggleCheats(){
+    let c = document.getElementById("cheats");
+    c.style.display = c.style.display==="none"?"block":"none";
+
+    c.innerHTML = `
+    <h3>Cheats</h3>
+    <button onclick="cheats.invincible=!cheats.invincible">Invincibility</button>
+    <button onclick="cheats.superSpeed=!cheats.superSpeed">Super Speed</button>
+    <button onclick="cheats.infiniteDamage=!cheats.infiniteDamage">Infinite Damage</button>
+    <button onclick="wave=2000;startWave()">Wave 2000</button>
+    `;
+}
+
+// SHOP
+function openShop(){
+    let shop = document.getElementById("shop");
+    shop.style.display="block";
+
+    shop.innerHTML = `
+    <h2>Shop (Coins: ${player.coins})</h2>
+    <button onclick="buy('hp')">+Max HP</button>
+    <button onclick="buy('heal')">Heal</button>
+    <button onclick="buy('dmg')">+Damage</button>
+    <button onclick="buy('freeze')">Upgrade Freeze</button>
+    <button onclick="buy('explode')">Upgrade Explode</button>
+    <button onclick="closeShop()">Continue</button>
+    `;
+}
+
+function closeShop(){
+    document.getElementById("shop").style.display="none";
+    startWave();
+}
+
+function buy(type){
+    if(player.coins < 10) return;
+    player.coins -= 10;
+
+    if(type==="hp") player.maxHp += 20;
+    if(type==="heal") player.hp = player.maxHp;
+    if(type==="dmg") player.damage += 5;
+    if(type==="freeze") player.freezeLevel++;
+    if(type==="explode") player.explodeLevel++;
+}
+
+// SPAWN
+function spawnEnemy(){
+    let angle = Math.random()*Math.PI*2;
+    let dist = 800;
+    let x = player.x + Math.cos(angle)*dist;
+    let y = player.y + Math.sin(angle)*dist;
+
+    enemies.push({
+        x,y,
+        hp:30+wave*5,
+        speed:1+wave*0.05,
+        frozen:0
+    });
+}
+
+// START WAVE
+function startWave(){
+    enemies = [];
+    enemiesToSpawn = 5 + wave*2;
+    spawning = true;
+}
+
+// GAME LOOP
+function update(){
+    // MOVE PLAYER
+    let spd = cheats.superSpeed ? 8 : player.speed;
+
+    let dx=0,dy=0;
+    if(keys["w"]||keys["arrowup"]) dy-=1;
+    if(keys["s"]||keys["arrowdown"]) dy+=1;
+    if(keys["a"]||keys["arrowleft"]) dx-=1;
+    if(keys["d"]||keys["arrowright"]) dx+=1;
+
+    if(joystick && joystick.active){
+        dx = joystick.dx/50;
+        dy = joystick.dy/50;
+    }
+
+    player.x += dx*spd;
+    player.y += dy*spd;
+
+    // CAMERA FOLLOW
+    camera.x = player.x - canvas.width/2;
+    camera.y = player.y - canvas.height/2;
+
+    // SPAWN
+    if(spawning){
+        spawnEnemy();
+        enemiesToSpawn--;
+        if(enemiesToSpawn<=0) spawning=false;
+    }
+
+    // ENEMIES
+    enemies.forEach(e=>{
+        if(e.frozen>0){ e.frozen--; return; }
+
+        let dx = player.x - e.x;
+        let dy = player.y - e.y;
+        let dist = Math.hypot(dx,dy);
+
+        e.x += dx/dist * e.speed;
+        e.y += dy/dist * e.speed;
+
+        if(dist < 20){
+            if(!cheats.invincible){
+                player.hp -= 0.5;
+            }
+        }
+    });
+
+    // REMOVE DEAD
+    enemies = enemies.filter(e=>{
+        if(e.hp<=0){
+            player.coins += 2;
+            return false;
+        }
+        return true;
+    });
+
+    // END WAVE
+    if(!spawning && enemies.length===0){
+        wave++;
+        openShop();
+    }
+
+    // AUTO SHOOT
+    if(Math.random()<0.2){
+        enemies.forEach(e=>{
+            let dx = e.x - player.x;
+            let dy = e.y - player.y;
+            let dist = Math.hypot(dx,dy);
+
+            bullets.push({
+                x:player.x,y:player.y,
+                vx:dx/dist*5,
+                vy:dy/dist*5
+            });
+        });
+    }
+
+    // BULLETS
+    bullets.forEach(b=>{
+        b.x += b.vx;
+        b.y += b.vy;
+
+        enemies.forEach(e=>{
+            let d = Math.hypot(e.x-b.x,e.y-b.y);
+            if(d<10){
+                e.hp -= cheats.infiniteDamage ? 9999 : player.damage;
+            }
+        });
+    });
+
+    bullets = bullets.filter(b=> b.x>-100 && b.y>-100 && b.x<WORLD_SIZE+100 && b.y<WORLD_SIZE+100);
+
+    // ABILITY KEYS
+    if(keys["q"]) freeze();
+    if(keys["e"]) explode();
+}
+
+// DRAW
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    ctx.save();
+    ctx.translate(-camera.x,-camera.y);
+
+    // GRID (gives sense of world)
+    ctx.strokeStyle="#111";
+    for(let x=0;x<WORLD_SIZE;x+=100){
+        ctx.beginPath();
+        ctx.moveTo(x,0);
+        ctx.lineTo(x,WORLD_SIZE);
+        ctx.stroke();
+    }
+
+    // PLAYER (glow orb)
+    let grad = ctx.createRadialGradient(player.x,player.y,5,player.x,player.y,20);
+    grad.addColorStop(0,"#0ff");
+    grad.addColorStop(1,"#003");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(player.x,player.y,player.radius,0,Math.PI*2);
+    ctx.fill();
+
+    // ENEMIES (spiky blobs)
+    enemies.forEach(e=>{
+        ctx.fillStyle = e.frozen>0 ? "#88f" : "#f33";
+        ctx.beginPath();
+        for(let i=0;i<8;i++){
+            let ang = i*Math.PI/4;
+            let r = 10 + Math.sin(Date.now()/200+i)*3;
+            ctx.lineTo(e.x+Math.cos(ang)*r,e.y+Math.sin(ang)*r);
+        }
+        ctx.fill();
+    });
+
+    // BULLETS
+    ctx.fillStyle="#ff0";
+    bullets.forEach(b=>{
+        ctx.beginPath();
+        ctx.arc(b.x,b.y,3,0,Math.PI*2);
+        ctx.fill();
+    });
+
+    ctx.restore();
+
+    // UI
+    document.getElementById("ui").innerHTML =
+        `HP: ${Math.floor(player.hp)}/${player.maxHp}<br>
+         Wave: ${wave}<br>
+         Coins: ${player.coins}`;
+}
+
+// LOOP
+function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+startWave();
+loop();
+
+</script>
+</body>
+</html>
